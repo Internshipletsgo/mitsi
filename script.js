@@ -1,5 +1,5 @@
 const API_BASE_URL =
-    "http://localhost:5000";
+    (window.APP_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
 
 
 const state = {
@@ -210,7 +210,7 @@ function formatDate(value) {
 
 
     const date =
-        new Date(value);
+        new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? value + "T00:00:00" : value);
 
 
     if (
@@ -305,129 +305,44 @@ fileInput.addEventListener(
 
 
 async function uploadExcel(file) {
-
-    statusText.textContent =
-        "Uploading and parsing Excel file...";
-
-
-    const formData =
-        new FormData();
-
-
-    formData.append(
-        "file",
-        file
-    );
-
-
+    uploadButton.disabled = true;
+    statusText.textContent = "Uploading and parsing Excel file...";
+    const formData = new FormData();
+    formData.append("file", file);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
     try {
-
-        const response =
-            await fetch(
-                API_BASE_URL +
-                "/upload",
-                {
-
-                    method:
-                        "POST",
-
-                    body:
-                        formData
-
-                }
-            );
-
-
-        if (!response.ok) {
-
-            throw new Error(
-                "Backend returned an error."
-            );
-
-        }
-
-
-        const result =
-            await response.json();
-
-
-        let rows = [];
-
-
-        if (
-            Array.isArray(
-                result
-            )
-        ) {
-
-            rows =
-                result;
-
-        }
-
-        else if (
-            Array.isArray(
-                result.data
-            )
-        ) {
-
-            rows =
-                result.data;
-
-        }
-
-        else if (
-            Array.isArray(
-                result.rows
-            )
-        ) {
-
-            rows =
-                result.rows;
-
-        }
-
-
-        state.rows =
-            rows.map(
-                normalizeRow
-            );
-
-
+        const response = await fetch(API_BASE_URL + "/upload", {
+            method: "POST", body: formData, signal: controller.signal
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "The upload failed.");
+        if (!Array.isArray(result.rows)) throw new Error("Unexpected response from the backend.");
+        state.rows = result.rows.map(normalizeRow);
         state.page = 1;
-
-
+        selectAll.checked = false;
         applyFilters();
-
-
-        statusText.textContent =
-            `Loaded ${state.rows.length} parsed rows.`;
-
-
-        showToast(
-            "Excel parsed successfully!"
-        );
-
+        const warnings = result.diagnostics?.warnings || [];
+        statusText.textContent = `Loaded ${state.rows.length} parsed rows. ` + warnings.join(" ");
+        showToast(state.rows.length ? "Excel parsed successfully!" : "No payable entries found.");
+    } catch (error) {
+        const message = error.name === "AbortError" ? "Upload timed out. Try a smaller workbook."
+            : error instanceof TypeError ? "Cannot reach the backend. Check that the server is running."
+            : error.message;
+        statusText.textContent = message;
+        showToast(message);
+    } finally {
+        clearTimeout(timeout);
+        uploadButton.disabled = false;
+        fileInput.value = "";
     }
-
-    catch (error) {
-
-        console.error(error);
-
-
-        statusText.textContent =
-            "Could not connect to Python backend.";
-
-
-        showToast(
-            "Backend connection failed."
-        );
-
-    }
-
 }
 
-
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[char]));
+}
 
 /* ===================================
 FILTERS
@@ -474,7 +389,9 @@ function applyFilters() {
     state.filteredRows =
         state.rows.filter(
             row => {
-
+                const date = String(row.DATE || "").slice(0, 10);
+                if (dateFrom.value && (!date || date < dateFrom.value)) return false;
+                if (dateTo.value && (!date || date > dateTo.value)) return false;
 
                 if (
                     reference &&
@@ -720,35 +637,35 @@ function renderTable() {
 
                 <td>
 
-                    ${row.REFERENCE}
+                    ${escapeHtml(row.REFERENCE)}
 
                 </td>
 
 
                 <td>
 
-                    ${row.PAYEE}
+                    ${escapeHtml(row.PAYEE)}
 
                 </td>
 
 
                 <td>
 
-                    ${row.PARTICULARS}
+                    ${escapeHtml(row.PARTICULARS)}
 
                 </td>
 
 
                 <td>
 
-                    ${row.BUS}
+                    ${escapeHtml(row.BUS)}
 
                 </td>
 
 
                 <td>
 
-                    ${row["ACCOUNT CODE"]}
+                    ${escapeHtml(row["ACCOUNT CODE"])}
 
                 </td>
 
@@ -1007,6 +924,8 @@ FILTER EVENTS
 =================================== */
 
 const filters = [
+    dateFrom,
+    dateTo,
 
     referenceFilter,
 
